@@ -22,7 +22,7 @@
 # URL "raw" del propio script en GitHub. Necesaria para auto-elevarse cuando
 # se ejecuta via "irm | iex" (no existe archivo local al cual relanzar).
 # >>> CAMBIA esto por tu URL real antes de subirlo a GitHub <<<
-$BootstrapUrl = 'https://raw.githubusercontent.com/TU_USUARIO/drivers-set/main/drivers-set.ps1'
+$BootstrapUrl = 'https://raw.githubusercontent.com/yokonad/drivers-set/main/drivers-set.ps1'
 # =============================================================================
 
 $ErrorActionPreference = 'Stop'
