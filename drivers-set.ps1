@@ -171,43 +171,44 @@ try {
     Write-Host '  (Omitido: tu version de Windows no soporta este paso.)' -ForegroundColor DarkGray
 }
 
-# ----- 4b. Modo de busqueda en Windows Update --------------------------------
-# Estandar (por defecto): solo Windows Update -> drivers WHQL certificados.
-#   Es preciso y mas veloz: NO sincroniza el catalogo de opcionales.
-# Profunda (opcional): tambien incluye drivers opcionales. Encuentra mas, pero
-#   tarda mas y algunos opcionales pueden ser menos estables.
-Write-Titulo 'Busqueda en Windows Update'
-Write-Host '    [E] Estandar - drivers certificados WHQL (preciso, recomendado)' -ForegroundColor Green
-Write-Host '    [P] Profunda - incluye opcionales (mas lenta, encuentra mas)' -ForegroundColor Gray
-$modo = (Read-Host '  Elige E o P (ENTER = E)').Trim().ToUpper()
+# ----- 4b. Busqueda en Windows Update (con caja de velocidad) ----------------
+# La lentitud real viene de la busqueda EN LINEA: el agente de Windows Update
+# refresca todo el catalogo desde los servidores de Microsoft (minutos).
+# La busqueda en CACHE local usa lo ya sincronizado y tarda segundos.
+# Por eso la opcion rapida (cache) es la predeterminada.
+$sesion = New-Object -ComObject Microsoft.Update.Session
 
-$idServicio = $null
-if ($modo -eq 'P') {
-    $sp0 = Start-Spinner 'Activando catalogo de drivers opcionales'
-    try {
-        # GUID del servicio Microsoft Update: incluye drivers opcionales/extra.
-        $msUpdateGuid = '7971f918-a847-4430-9279-4a52d1efe18d'
-        $gestor = New-Object -ComObject Microsoft.Update.ServiceManager
-        [void]$gestor.AddService2($msUpdateGuid, 7, '')
-        $idServicio = $msUpdateGuid
-    } catch {
-        $idServicio = $null   # si falla, usamos Windows Update estandar
-    }
-    Stop-Spinner $sp0
-}
-
-$sp1 = Start-Spinner 'Buscando drivers'
-try {
-    $sesion   = New-Object -ComObject Microsoft.Update.Session
+function Buscar-Drivers([bool]$enLinea, [bool]$opcionales) {
     $buscador = $sesion.CreateUpdateSearcher()
-    $buscador.Online = $true
-    if ($idServicio) {
-        $buscador.ServerSelection = 3          # ssOthers
-        $buscador.ServiceID = $idServicio
+    $buscador.Online = $enLinea
+    if ($enLinea -and $opcionales) {
+        try {
+            $msUpdateGuid = '7971f918-a847-4430-9279-4a52d1efe18d'
+            $gestor = New-Object -ComObject Microsoft.Update.ServiceManager
+            [void]$gestor.AddService2($msUpdateGuid, 7, '')
+            $buscador.ServerSelection = 3      # ssOthers
+            $buscador.ServiceID = $msUpdateGuid
+        } catch {}
     }
     # Solo drivers no instalados. Windows Update solo sirve drivers WHQL.
-    $resultado = $buscador.Search("IsInstalled=0 AND Type='Driver'")
-    $drivers   = @($resultado.Updates)
+    return @($buscador.Search("IsInstalled=0 AND Type='Driver'").Updates)
+}
+
+Write-Titulo 'Velocidad de busqueda'
+Write-Host '    [1] Rapida   - cache local, segundos (recomendada)' -ForegroundColor Green
+Write-Host '    [2] Completa - en linea, mas lenta pero exhaustiva' -ForegroundColor Gray
+Write-Host '    [3] Profunda - en linea + opcionales, la mas lenta' -ForegroundColor Gray
+$velocidad = (Read-Host '  Elige 1, 2 o 3 (ENTER = 1)').Trim()
+
+switch ($velocidad) {
+    '2'     { $enLinea = $true;  $opcionales = $false; $etq = 'Buscando en linea' }
+    '3'     { $enLinea = $true;  $opcionales = $true;  $etq = 'Buscando en linea (con opcionales)' }
+    default { $enLinea = $false; $opcionales = $false; $etq = 'Buscando en cache local' }
+}
+
+$sp1 = Start-Spinner $etq
+try {
+    $drivers = Buscar-Drivers $enLinea $opcionales
 } catch {
     Stop-Spinner $sp1
     Write-Host "  Error consultando Windows Update: $($_.Exception.Message)" -ForegroundColor Red
@@ -216,6 +217,17 @@ try {
     return
 }
 Stop-Spinner $sp1
+
+# Si la busqueda rapida (cache) no encontro nada, ofrecer la busqueda en linea.
+if ($drivers.Count -eq 0 -and -not $enLinea) {
+    Write-Host '  La busqueda rapida no encontro drivers en la cache local.' -ForegroundColor Yellow
+    $r = (Read-Host '  Buscar en linea ahora? (mas lento) (S/n)').Trim().ToLower()
+    if ($r -notin @('n', 'no')) {
+        $sp1b = Start-Spinner 'Buscando en linea'
+        try { $drivers = Buscar-Drivers $true $false } catch {}
+        Stop-Spinner $sp1b
+    }
+}
 
 if ($drivers.Count -eq 0) {
     Write-Host ''
