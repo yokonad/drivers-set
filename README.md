@@ -9,7 +9,7 @@ Usa **Windows Update** como fuente: solo drivers **WHQL** (certificados y testea
 Abre **PowerShell** y pega:
 
 ```powershell
-irm https://raw.githubusercontent.com/TU_USUARIO/drivers-set/main/drivers-set.ps1 | iex
+irm https://raw.githubusercontent.com/yokonad/drivers-set/main/drivers-set.ps1 | iex
 ```
 
 El script:
@@ -23,9 +23,8 @@ El script:
 
 ## Importante
 
-- Reemplaza `TU_USUARIO` por tu usuario de GitHub en **dos** sitios:
-  - La URL del comando de arriba.
-  - La variable `$BootstrapUrl` dentro de `drivers-set.ps1` (necesaria para la auto-elevación).
+- Funciona en **cualquier PC con Windows** sin cambiar nada: detecta el hardware real de cada equipo e instala solo los drivers que esa máquina necesita.
+- La URL del comando apunta siempre a este repositorio (es de dónde se descarga el script); no depende de la PC donde se ejecute.
 - Requiere conexión a internet y el servicio **Windows Update** activo.
 - No descarga drivers de sitios de terceros: todo proviene del catálogo oficial de Microsoft.
 
