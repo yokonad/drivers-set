@@ -39,6 +39,37 @@ function Write-Item($etiqueta, $valor, $color = 'Gray') {
     Write-Host " $valor" -ForegroundColor $color
 }
 
+# Indicador animado en un runspace aparte (para mostrar progreso mientras la
+# busqueda de Windows Update bloquea el hilo principal). Si algo falla, no rompe
+# el flujo: simplemente no se ve el spinner.
+function Start-Spinner($texto) {
+    try {
+        $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+        $ps = [powershell]::Create(); $ps.Runspace = $rs
+        [void]$ps.AddScript({
+            param($txt)
+            $frames = '|', '/', '-', '\'; $i = 0; $t0 = Get-Date
+            while ($true) {
+                $seg = [int]((Get-Date) - $t0).TotalSeconds
+                [Console]::Write("`r  $($frames[$i % 4]) $txt ($seg s)    ")
+                Start-Sleep -Milliseconds 150; $i++
+            }
+        }).AddArgument($texto)
+        [void]$ps.BeginInvoke()
+        return [pscustomobject]@{ PS = $ps; RS = $rs }
+    } catch {
+        Write-Host "  $texto..." -ForegroundColor DarkGray
+        return $null
+    }
+}
+function Stop-Spinner($sp) {
+    if ($null -eq $sp) { return }
+    try { $sp.PS.Stop() } catch {}
+    try { $sp.PS.Dispose() } catch {}
+    try { $sp.RS.Close(); $sp.RS.Dispose() } catch {}
+    try { [Console]::Write("`r" + (' ' * 60) + "`r") } catch {}
+}
+
 # ----- 1. Auto-elevacion a Administrador -------------------------------------
 $identidad = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identidad)
@@ -128,20 +159,44 @@ if ($problemas.Count -gt 0) {
     Write-Host '  Todos los dispositivos presentes reportan estado OK.' -ForegroundColor Green
 }
 
-# ----- 4. Registrar Microsoft Update (para drivers OPCIONALES) ---------------
-Write-Titulo 'Buscando drivers en Windows Update (puede tardar)'
-$idServicio = $null
+# ----- 4a. Paso rapido offline: almacen local de drivers ---------------------
+# pnputil /scan-devices hace que Windows instale, sin internet, cualquier driver
+# que ya tenga en su almacen local para los dispositivos detectados. Es casi
+# instantaneo y resuelve muchos casos antes de ir a la red.
+Write-Titulo 'Paso rapido: revisando el almacen local de Windows'
 try {
-    # GUID del servicio Microsoft Update: incluye drivers opcionales/extra.
-    $msUpdateGuid = '7971f918-a847-4430-9279-4a52d1efe18d'
-    $gestor = New-Object -ComObject Microsoft.Update.ServiceManager
-    [void]$gestor.AddService2($msUpdateGuid, 7, '')
-    $idServicio = $msUpdateGuid
+    & pnputil.exe /scan-devices | Out-Null
+    Write-Host '  Listo (se instalo lo que ya estaba disponible localmente).' -ForegroundColor Green
 } catch {
-    # Si falla, seguimos con el servicio por defecto de Windows Update.
-    $idServicio = $null
+    Write-Host '  (Omitido: tu version de Windows no soporta este paso.)' -ForegroundColor DarkGray
 }
 
+# ----- 4b. Modo de busqueda en Windows Update --------------------------------
+# Estandar (por defecto): solo Windows Update -> drivers WHQL certificados.
+#   Es preciso y mas veloz: NO sincroniza el catalogo de opcionales.
+# Profunda (opcional): tambien incluye drivers opcionales. Encuentra mas, pero
+#   tarda mas y algunos opcionales pueden ser menos estables.
+Write-Titulo 'Busqueda en Windows Update'
+Write-Host '    [E] Estandar - drivers certificados WHQL (preciso, recomendado)' -ForegroundColor Green
+Write-Host '    [P] Profunda - incluye opcionales (mas lenta, encuentra mas)' -ForegroundColor Gray
+$modo = (Read-Host '  Elige E o P (ENTER = E)').Trim().ToUpper()
+
+$idServicio = $null
+if ($modo -eq 'P') {
+    $sp0 = Start-Spinner 'Activando catalogo de drivers opcionales'
+    try {
+        # GUID del servicio Microsoft Update: incluye drivers opcionales/extra.
+        $msUpdateGuid = '7971f918-a847-4430-9279-4a52d1efe18d'
+        $gestor = New-Object -ComObject Microsoft.Update.ServiceManager
+        [void]$gestor.AddService2($msUpdateGuid, 7, '')
+        $idServicio = $msUpdateGuid
+    } catch {
+        $idServicio = $null   # si falla, usamos Windows Update estandar
+    }
+    Stop-Spinner $sp0
+}
+
+$sp1 = Start-Spinner 'Buscando drivers'
 try {
     $sesion   = New-Object -ComObject Microsoft.Update.Session
     $buscador = $sesion.CreateUpdateSearcher()
@@ -154,11 +209,13 @@ try {
     $resultado = $buscador.Search("IsInstalled=0 AND Type='Driver'")
     $drivers   = @($resultado.Updates)
 } catch {
+    Stop-Spinner $sp1
     Write-Host "  Error consultando Windows Update: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host '  Revisa tu internet y que el servicio Windows Update este activo.' -ForegroundColor Red
     Read-Host '  Presiona ENTER para salir'
     return
 }
+Stop-Spinner $sp1
 
 if ($drivers.Count -eq 0) {
     Write-Host ''
@@ -216,23 +273,29 @@ if ($aInstalar.Count -eq 0) {
 
 # ----- 7. Descargar e instalar -----------------------------------------------
 Write-Titulo "Descargando $($aInstalar.Count) driver(s)"
+$sp2 = Start-Spinner 'Descargando'
 try {
     $descargador = $sesion.CreateUpdateDownloader()
     $descargador.Updates = $aInstalar
     [void]$descargador.Download()
+    Stop-Spinner $sp2
     Write-Host '  Descarga completada.' -ForegroundColor Green
 } catch {
+    Stop-Spinner $sp2
     Write-Host "  Error en la descarga: $($_.Exception.Message)" -ForegroundColor Red
     Read-Host '  Presiona ENTER para salir'
     return
 }
 
 Write-Titulo 'Instalando drivers'
+$sp3 = Start-Spinner 'Instalando'
 try {
     $instalador = $sesion.CreateUpdateInstaller()
     $instalador.Updates = $aInstalar
     $res = $instalador.Install()
+    Stop-Spinner $sp3
 } catch {
+    Stop-Spinner $sp3
     Write-Host "  Error en la instalacion: $($_.Exception.Message)" -ForegroundColor Red
     Read-Host '  Presiona ENTER para salir'
     return
