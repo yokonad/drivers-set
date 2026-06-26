@@ -165,8 +165,12 @@ if ($problemas.Count -gt 0) {
 # instantaneo y resuelve muchos casos antes de ir a la red.
 Write-Titulo 'Paso rapido: revisando el almacen local de Windows'
 try {
-    & pnputil.exe /scan-devices | Out-Null
-    Write-Host '  Listo (se instalo lo que ya estaba disponible localmente).' -ForegroundColor Green
+    & pnputil.exe /scan-devices 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host '  Listo (se instalo lo que ya estaba disponible localmente).' -ForegroundColor Green
+    } else {
+        Write-Host '  (Omitido: tu version de Windows no soporta este paso.)' -ForegroundColor DarkGray
+    }
 } catch {
     Write-Host '  (Omitido: tu version de Windows no soporta este paso.)' -ForegroundColor DarkGray
 }
@@ -191,7 +195,14 @@ function Buscar-Drivers([bool]$enLinea, [bool]$opcionales) {
         } catch {}
     }
     # Solo drivers no instalados. Windows Update solo sirve drivers WHQL.
-    return @($buscador.Search("IsInstalled=0 AND Type='Driver'").Updates)
+    # Recorremos la coleccion COM por indice (fiable): asi 0 drivers = 0 reales,
+    # y no caemos en el envoltorio que hace que una coleccion vacia parezca 1.
+    $coleccion = $buscador.Search("IsInstalled=0 AND Type='Driver'").Updates
+    $lista = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $coleccion.Count; $i++) {
+        [void]$lista.Add($coleccion.Item($i))
+    }
+    return , $lista.ToArray()
 }
 
 Write-Titulo 'Velocidad de busqueda'
@@ -208,7 +219,7 @@ switch ($velocidad) {
 
 $sp1 = Start-Spinner $etq
 try {
-    $drivers = Buscar-Drivers $enLinea $opcionales
+    $drivers = @(Buscar-Drivers $enLinea $opcionales)
 } catch {
     Stop-Spinner $sp1
     Write-Host "  Error consultando Windows Update: $($_.Exception.Message)" -ForegroundColor Red
@@ -224,14 +235,20 @@ if ($drivers.Count -eq 0 -and -not $enLinea) {
     $r = (Read-Host '  Buscar en linea ahora? (mas lento) (S/n)').Trim().ToLower()
     if ($r -notin @('n', 'no')) {
         $sp1b = Start-Spinner 'Buscando en linea'
-        try { $drivers = Buscar-Drivers $true $false } catch {}
+        try { $drivers = @(Buscar-Drivers $true $false) } catch {}
         Stop-Spinner $sp1b
     }
 }
 
 if ($drivers.Count -eq 0) {
     Write-Host ''
-    Write-Host '  No hay drivers nuevos recomendados. Tu sistema esta al dia. :)' -ForegroundColor Green
+    if ($problemas.Count -gt 0) {
+        # Hay hardware con problemas pero Windows Update no tiene su driver.
+        Write-Host '  Windows Update no tiene drivers para los dispositivos con problemas.' -ForegroundColor Yellow
+        Write-Host '  Para esos casos quiza necesites el driver del fabricante (Intel, NVIDIA, etc.).' -ForegroundColor Yellow
+    } else {
+        Write-Host '  No hay drivers nuevos recomendados. Tu sistema esta al dia. :)' -ForegroundColor Green
+    }
     Read-Host '  Presiona ENTER para salir'
     return
 }
@@ -284,6 +301,12 @@ if ($aInstalar.Count -eq 0) {
 }
 
 # ----- 7. Descargar e instalar -----------------------------------------------
+# Aceptar el contrato de licencia donde aplique (algunos drivers lo exigen,
+# si no, la instalacion falla).
+foreach ($u in $aInstalar) {
+    try { if (-not $u.EulaAccepted) { $u.AcceptEula() } } catch {}
+}
+
 Write-Titulo "Descargando $($aInstalar.Count) driver(s)"
 $sp2 = Start-Spinner 'Descargando'
 try {
